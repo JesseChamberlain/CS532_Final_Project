@@ -11,13 +11,49 @@ import pandas as pd
 # --------------------------------------------------
 spark = SparkSession.builder.appName("LoanDefaultModelComparison").getOrCreate()
 
-# --------------------------------------------------
-# 2. Load dataset
+# 2. Load dataset, document schema and partition
+#    count, show Spark's lazy eval
 # --------------------------------------------------
 df = spark.read.csv("Loan_Default.csv", header=True, inferSchema=True)
 
 print("Schema:")
+print("Schema of the DataFrame:")
 df.printSchema()
+
+print(f"Number of partitions: ", df.rdd.getNumPartitions())
+
+# apply a lazy transformation
+df_filtered = df.filter(col("loan_amount") > 1000)
+print("Applied filter transformation - this is lazy, no execution yet.")
+
+# show execution plan for transformation
+print("\nExecution plan: ")
+df_filtered.explain(extended=True)
+
+# trigger an action to execute the plan
+count = df_filtered.count()
+print(f"Count after filter (action triggers execution): {count}\n")# 2. Load dataset, document schema and partition
+#    count, show Spark's lazy eval
+# --------------------------------------------------
+df = spark.read.csv("Loan_Default.csv", header=True, inferSchema=True)
+
+print("Schema:")
+print("Schema of the DataFrame:")
+df.printSchema()
+
+print(f"Number of partitions: ", df.rdd.getNumPartitions())
+
+# apply a lazy transformation
+df_filtered = df.filter(col("loan_amount") > 1000)
+print("Applied filter transformation - this is lazy, no execution yet.")
+
+# show execution plan for transformation
+print("\nExecution plan: ")
+df_filtered.explain(extended=True)
+
+# trigger an action to execute the plan
+count = df_filtered.count()
+print(f"Count after filter (action triggers execution): {count}\n")
 
 print("Sample rows:")
 df.show(5)
