@@ -1,4 +1,7 @@
+import time
+
 import pandas as pd
+from pyspark import StorageLevel
 from pyspark.ml import Pipeline
 from pyspark.ml.classification import (
     DecisionTreeClassifier,
@@ -95,6 +98,17 @@ df.groupBy(label_col).count().show()
 # --------------------------------------------------
 train_df, test_df = df.randomSplit([0.8, 0.2], seed=42)
 
+# Cache train/test
+train_df.persist(StorageLevel.MEMORY_AND_DISK)
+test_df.persist(StorageLevel.MEMORY_AND_DISK)
+
+# Materialize the cache, trigger lazy eval
+train_df.count()
+test_df.count()
+
+print(f"train_df storage level: {train_df.storageLevel}")
+print(f"test_df storage level: {test_df.storageLevel}")
+
 print("Training label counts:")
 train_df.groupBy(label_col).count().show()
 
@@ -167,8 +181,13 @@ for model_name, classifier in models.items():
         stages=indexers + encoders + [imputer, assembler, scaler, classifier]
     )
 
+    start_time = time.time()
+
     fitted_model = pipeline.fit(train_df)
     predictions = fitted_model.transform(test_df)
+
+    elapsed = time.time() - start_time
+    print(f"{model_name} completed in {elapsed:.2f}s")
 
     if model_name == "Logistic Regression":
         print("\n--- Physical Execution Plan (Full Pipeline) ---")
@@ -193,6 +212,7 @@ for model_name, classifier in models.items():
             "F1 Score": f1,
             "Weighted Precision": weighted_precision,
             "Weighted Recall": weighted_recall,
+            "Training Time (s)": round(elapsed, 2),
         }
     )
 
@@ -225,5 +245,9 @@ print(f"Accuracy: {best_row['Accuracy']}")
 print(f"F1 Score: {best_row['F1 Score']}")
 print(f"Weighted Precision: {best_row['Weighted Precision']}")
 print(f"Weighted Recall: {best_row['Weighted Recall']}")
+
+# Remove persistance
+train_df.unpersist()
+test_df.unpersist()
 
 spark.stop()
