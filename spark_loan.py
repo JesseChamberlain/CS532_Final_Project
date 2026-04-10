@@ -16,12 +16,12 @@ spark = SparkSession.builder.appName("LoanDefaultModelComparison").getOrCreate()
 # --------------------------------------------------
 df = spark.read.csv("Loan_Default.csv", header=True, inferSchema=True)
 
-print("Schema:")
 print("Schema of the DataFrame:")
 df.printSchema()
 
 print(f"Number of partitions: ", df.rdd.getNumPartitions())
 
+<<<<<<< Updated upstream
 # apply a lazy transformation
 df_filtered = df.filter(col("loan_amount") > 1000)
 print("Applied filter transformation - this is lazy, no execution yet.")
@@ -42,6 +42,12 @@ print("Schema of the DataFrame:")
 df.printSchema()
 
 print(f"Number of partitions: ", df.rdd.getNumPartitions())
+=======
+# Repartition to match available parallelism (will adapt to each of our machines)
+default_par = spark.sparkContext.defaultParallelism
+df = df.repartition(default_par)
+print(f"Repartitioned to {df.rdd.getNumPartitions()} partitions (defaultParallelism={default_par})")
+>>>>>>> Stashed changes
 
 # apply a lazy transformation
 df_filtered = df.filter(col("loan_amount") > 1000)
