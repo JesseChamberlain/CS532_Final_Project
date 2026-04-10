@@ -1,10 +1,26 @@
+import time
+
+import pandas as pd
+from pyspark import StorageLevel
+from pyspark.ml import Pipeline
+from pyspark.ml.classification import (
+    DecisionTreeClassifier,
+    LogisticRegression,
+    RandomForestClassifier,
+)
+from pyspark.ml.evaluation import (
+    BinaryClassificationEvaluator,
+    MulticlassClassificationEvaluator,
+)
+from pyspark.ml.feature import (
+    Imputer,
+    OneHotEncoder,
+    StandardScaler,
+    StringIndexer,
+    VectorAssembler,
+)
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col
-from pyspark.ml import Pipeline
-from pyspark.ml.feature import StringIndexer, OneHotEncoder, VectorAssembler, StandardScaler, Imputer
-from pyspark.ml.classification import LogisticRegression, DecisionTreeClassifier, RandomForestClassifier
-from pyspark.ml.evaluation import BinaryClassificationEvaluator, MulticlassClassificationEvaluator
-import pandas as pd
 
 # --------------------------------------------------
 # 1. Create Spark session
@@ -22,26 +38,12 @@ df.printSchema()
 
 print(f"Number of partitions: ", df.rdd.getNumPartitions())
 
-# apply a lazy transformation
-df_filtered = df.filter(col("loan_amount") > 1000)
-print("Applied filter transformation - this is lazy, no execution yet.")
-
-# show execution plan for transformation
-print("\nExecution plan: ")
-df_filtered.explain(extended=True)
-
-# trigger an action to execute the plan
-count = df_filtered.count()
-print(f"Count after filter (action triggers execution): {count}\n")# 2. Load dataset, document schema and partition
-#    count, show Spark's lazy eval
-# --------------------------------------------------
-df = spark.read.csv("Loan_Default.csv", header=True, inferSchema=True)
-
-print("Schema:")
-print("Schema of the DataFrame:")
-df.printSchema()
-
-print(f"Number of partitions: ", df.rdd.getNumPartitions())
+# Repartition to match available parallelism (will adapt to each of our machines)
+default_par = spark.sparkContext.defaultParallelism
+df = df.repartition(default_par)
+print(
+    f"Repartitioned to {df.rdd.getNumPartitions()} partitions (defaultParallelism={default_par})"
+)
 
 # apply a lazy transformation
 df_filtered = df.filter(col("loan_amount") > 1000)
@@ -63,12 +65,7 @@ print("Row count before cleaning:", df.count())
 # --------------------------------------------------
 # 3. Define columns
 # --------------------------------------------------
-categorical_cols = [
-    "loan_purpose",
-    "Gender",
-    "loan_type",
-    "Region"
-]
+categorical_cols = ["loan_purpose", "Gender", "loan_type", "Region"]
 
 numeric_cols = [
     "loan_amount",
@@ -77,7 +74,7 @@ numeric_cols = [
     "income",
     "Credit_Score",
     "LTV",
-    "dtir1"
+    "dtir1",
 ]
 
 label_col = "Status"
@@ -101,6 +98,17 @@ df.groupBy(label_col).count().show()
 # --------------------------------------------------
 train_df, test_df = df.randomSplit([0.8, 0.2], seed=42)
 
+# Cache train/test
+train_df.persist(StorageLevel.MEMORY_AND_DISK)
+test_df.persist(StorageLevel.MEMORY_AND_DISK)
+
+# Materialize the cache, trigger lazy eval
+train_df.count()
+test_df.count()
+
+print(f"train_df storage level: {train_df.storageLevel}")
+print(f"test_df storage level: {test_df.storageLevel}")
+
 print("Training label counts:")
 train_df.groupBy(label_col).count().show()
 
@@ -116,63 +124,47 @@ indexers = [
 ]
 
 encoders = [
-    OneHotEncoder(inputCol=f"{c}_index", outputCol=f"{c}_vec")
-    for c in categorical_cols
+    OneHotEncoder(inputCol=f"{c}_index", outputCol=f"{c}_vec") for c in categorical_cols
 ]
 
 imputer = Imputer(
-    inputCols=numeric_cols,
-    outputCols=[f"{c}_imputed" for c in numeric_cols]
+    inputCols=numeric_cols, outputCols=[f"{c}_imputed" for c in numeric_cols]
 ).setStrategy("median")
 
-feature_cols = [f"{c}_vec" for c in categorical_cols] + [f"{c}_imputed" for c in numeric_cols]
+feature_cols = [f"{c}_vec" for c in categorical_cols] + [
+    f"{c}_imputed" for c in numeric_cols
+]
 
 assembler = VectorAssembler(
-    inputCols=feature_cols,
-    outputCol="assembled_features",
-    handleInvalid="skip"
+    inputCols=feature_cols, outputCol="assembled_features", handleInvalid="skip"
 )
 
-scaler = StandardScaler(
-    inputCol="assembled_features",
-    outputCol="features"
-)
+scaler = StandardScaler(inputCol="assembled_features", outputCol="features")
 
 # --------------------------------------------------
 # 7. Define models
 # --------------------------------------------------
 models = {
     "Logistic Regression": LogisticRegression(
-        featuresCol="features",
-        labelCol=label_col,
-        maxIter=100
+        featuresCol="features", labelCol=label_col, maxIter=100
     ),
     "Decision Tree": DecisionTreeClassifier(
-        featuresCol="features",
-        labelCol=label_col,
-        maxDepth=5
+        featuresCol="features", labelCol=label_col, maxDepth=5
     ),
     "Random Forest": RandomForestClassifier(
-        featuresCol="features",
-        labelCol=label_col,
-        numTrees=50,
-        maxDepth=8,
-        seed=42
-    )
+        featuresCol="features", labelCol=label_col, numTrees=50, maxDepth=8, seed=42
+    ),
 }
 
 # --------------------------------------------------
 # 8. Evaluators
 # --------------------------------------------------
 binary_eval = BinaryClassificationEvaluator(
-    labelCol=label_col,
-    rawPredictionCol="rawPrediction",
-    metricName="areaUnderROC"
+    labelCol=label_col, rawPredictionCol="rawPrediction", metricName="areaUnderROC"
 )
 
 multi_eval = MulticlassClassificationEvaluator(
-    labelCol=label_col,
-    predictionCol="prediction"
+    labelCol=label_col, predictionCol="prediction"
 )
 
 # --------------------------------------------------
@@ -189,8 +181,17 @@ for model_name, classifier in models.items():
         stages=indexers + encoders + [imputer, assembler, scaler, classifier]
     )
 
+    start_time = time.time()
+
     fitted_model = pipeline.fit(train_df)
     predictions = fitted_model.transform(test_df)
+
+    elapsed = time.time() - start_time
+    print(f"{model_name} completed in {elapsed:.2f}s")
+
+    if model_name == "Logistic Regression":
+        print("\n--- Physical Execution Plan (Full Pipeline) ---")
+        predictions.explain(mode="formatted")
 
     print(f"Sample predictions for {model_name}:")
     predictions.select(label_col, "prediction", "probability").show(10, truncate=False)
@@ -198,17 +199,22 @@ for model_name, classifier in models.items():
     auc = binary_eval.evaluate(predictions)
     accuracy = multi_eval.setMetricName("accuracy").evaluate(predictions)
     f1 = multi_eval.setMetricName("f1").evaluate(predictions)
-    weighted_precision = multi_eval.setMetricName("weightedPrecision").evaluate(predictions)
+    weighted_precision = multi_eval.setMetricName("weightedPrecision").evaluate(
+        predictions
+    )
     weighted_recall = multi_eval.setMetricName("weightedRecall").evaluate(predictions)
 
-    results.append({
-        "Model": model_name,
-        "AUC": auc,
-        "Accuracy": accuracy,
-        "F1 Score": f1,
-        "Weighted Precision": weighted_precision,
-        "Weighted Recall": weighted_recall
-    })
+    results.append(
+        {
+            "Model": model_name,
+            "AUC": auc,
+            "Accuracy": accuracy,
+            "F1 Score": f1,
+            "Weighted Precision": weighted_precision,
+            "Weighted Recall": weighted_recall,
+            "Training Time (s)": round(elapsed, 2),
+        }
+    )
 
 # --------------------------------------------------
 # 10. Convert results to pandas DataFrame
@@ -239,5 +245,9 @@ print(f"Accuracy: {best_row['Accuracy']}")
 print(f"F1 Score: {best_row['F1 Score']}")
 print(f"Weighted Precision: {best_row['Weighted Precision']}")
 print(f"Weighted Recall: {best_row['Weighted Recall']}")
+
+# Remove persistance
+train_df.unpersist()
+test_df.unpersist()
 
 spark.stop()
