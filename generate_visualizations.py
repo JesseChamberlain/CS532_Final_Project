@@ -127,7 +127,6 @@ def plot_partition_benchmark():
 
 
 def plot_cache_benchmark():
-    """Visualize cache storage level comparison."""
     df = pd.read_csv(OUTPUT_DIR/"cache_storage_benchmark.csv")
 
     fig, ax = plt.subplots(figsize=(10, 6))
