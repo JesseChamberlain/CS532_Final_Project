@@ -3,6 +3,39 @@
 Loan application analytics and model benchmarking pipeline built with PySpark.
 
 # --------------------------------------------------
+# Quick Start
+# --------------------------------------------------
+
+## Prerequisites
+
+- Python 3.10+
+- Java 17 or 21
+
+## Setup and Run
+
+```bash
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Run the main pipeline
+python spark_loan.py
+
+# Generate visualization charts for the report
+python generate_visualizations.py
+```
+
+## Output Files
+
+After running, you will have:
+
+- `outputs/*.csv` - Benchmark data files
+- `figures/*.png` - Visualization charts for your slideshow
+
+# --------------------------------------------------
 # 1. Project constants
 # --------------------------------------------------
 
@@ -147,4 +180,89 @@ Execution order in `spark_loan.py`:
 8. Run fault tolerance demonstration
 9. Export benchmark/model outputs to CSV
 10. Run scalability experiment and export results
+
+# --------------------------------------------------
+# 13. Visualizations Guide
+# --------------------------------------------------
+
+Run `python generate_visualizations.py` to create charts in `figures/`.
+
+## class_imbalance.png
+Pie and bar chart of the distribution of loan defaults (class 1) vs non-defaults (class 0)
+
+## partition_benchmark.png
+Heatmap and bar chart of runtime for different combinations of repartition count and shuffle partition settings
+
+## cache_benchmark.png
+Bar chart comparison of MEMORY_ONLY, MEMORY_AND_DISK, DISK_ONLY first pass vs cache hit
+
+## fault_tolerance.png
+Bars comparing initial compute time, cache hit time, and recomputation time after cache is lost
+
+## scalability.png
+Throughput (rows/second) and speedup as CPU cores and memory increase
+
+## model_comparison.png
+Bar charts comparing model AUC scores and training times across different configs
+
+## model_heatmap.png
+Heatmap of AUC, Accuracy, F1, Precision, Recallacross all model/scenario combos
+
+# --------------------------------------------------
+# 14. Slideshow Outline
+# --------------------------------------------------
+
+## Slide 1: Title
+- Project: Loan Default Prediction with Apache Spark
+- Team members
+  
+## Slide 2: Problem Statement
+- Goal: Predict loan defaults using distributed computing
+- Challenge: Large dataset, class imbalance (3:1 ratio where most borrowers repaid their loan)
+- Figure: `class_imbalance.png`
+
+## Slide 3: System Architecture
+- Spark driver/worker model
+- Data flow: CSV -> DataFrame -> ML Pipeline -> Predictions
+- Figure: `Map Spark deployment architecture.jpg`
+
+## Slide 4: Data Pipeline
+- Loading with schema inference
+- Lazy evaluation and DAG execution
+- Preprocessing: cleaning, encoding, scaling
+
+## Slide 5: Partitioning Optimization
+- Why partitioning matters for parallel performance
+- Benchmark results: best config found
+- Figure: `partition_benchmark.png`
+
+## Slide 6: Caching Strategies
+- Storage levels: MEMORY_ONLY, MEMORY_AND_DISK, DISK_ONLY
+- Cache hit provides 5-15x speedup
+- Figure: `cache_benchmark.png`
+
+## Slide 7: Fault Tolerance
+- Spark's lineage-based recovery
+- Demo: unpersist cache, recompute from DAG
+- Figure: `fault_tolerance.png`
+
+## Slide 8: Scalability Analysis
+- Testing with 1, 2, and 4 cores
+- Diminishing returns observed (Amdahl's Law)
+- Figure: `scalability.png`
+
+## Slide 9: ML Model Comparison
+- Three models: Logistic Regression, Decision Tree, Random Forest
+- Three scenarios: Baseline, Class Weighting, Downsampling
+- Figure: `model_comparison.png` or `model_heatmap.png`
+
+## Slide 10: Results Summary
+- Found best model was Random Forest w (AUC = 0.98)
+- Found best Spark config was 10 partitions, 40 shuffle partitions
+- Show that tuning and model go together
+
+## Slide 11: Conclusions
+- Demonstrated distributed ML pipeline with Spark
+- Showed impact of partitioning, caching, and resource allocation
+- Validated fault tolerance via RDD lineage
 

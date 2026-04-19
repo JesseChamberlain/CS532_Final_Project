@@ -550,7 +550,6 @@ def run_scalability_experiment(csv_path):
 # 12. Main orchestration
 # --------------------------------------------------
 def main():
-    # Ensure output folder exists before writing benchmark CSVs.
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     spark = create_spark()
