@@ -673,7 +673,84 @@ def run_scalability_experiment(csv_path):
 
 
 # --------------------------------------------------
-# 12. Main orchestration
+# 12. Compare how models behave under different
+#     system configurations
+# --------------------------------------------------
+def run_models_across_systems(csv_path):
+    print("\n" + "=" * 80)
+    print("MODEL TRAINING ACROSS SYSTEM CONFIGURATIONS")
+    print("=" * 80)
+
+    system_configs = [
+        {"cores": 1, "memory": "1g", "shuffle": 8},
+        {"cores": 2, "memory": "2g", "shuffle": 16},
+        {"cores": 4, "memory": "4g", "shuffle": 32}
+    ]
+
+    all_results = []
+
+    for cfg in system_configs:
+        print("\n" + "-" * 60)
+        print(f"Running config: {cfg}")
+        print("-" * 60)
+
+        spark = (
+            SparkSession.builder.appName(f"SystemTest_{cfg['cores']}c")
+            .master(f"local[{cfg['cores']}]")
+            .config("spark.driver.memory", cfg["memory"])
+            .config("spark.sql.shuffle.partitions", str(cfg["shuffle"]))
+            .getOrCreate()
+        )
+
+        try:
+            # load + clean
+            df = spark.read.csv(csv_path, header=True, inferSchema=True)
+            df = clean_data(df)
+
+            # split
+            train_df, test_df = df.randomSplit([0.8, 0.2], seed=42)
+
+            # cache (important for fair comparison)
+            train_df.persist(StorageLevel.MEMORY_AND_DISK)
+            test_df.persist(StorageLevel.MEMORY_AND_DISK)
+            _ = train_df.count()
+            _ = test_df.count()
+
+            # evaluate baseline models only
+            results = evaluate_models(
+                train_df,
+                test_df,
+                scenario_name=f"{cfg['cores']} cores | {cfg['memory']} | shuffle={cfg['shuffle']}",
+                show_plan=False,
+                weight_col=None,
+            )
+
+            # attach system metadata
+            for result in results:
+                result["cores"] = cfg["cores"]
+                result["memory"] = cfg["memory"]
+                result["shuffle_partitions"] =cfg["shuffle"]
+
+            all_results.extend(results)
+
+            train_df.unpersist()
+            test_df.unpersist()
+
+        finally:
+            spark.stop()
+
+    results_pd = pd.DataFrame(all_results)
+
+    print("\n" + "#" * 80)
+    print("CROSS-SYSTEM MODEL COMPARISON")
+    print("#" * 80)
+    print(results_pd.to_string(index=False))
+
+    return results_pd
+
+
+# --------------------------------------------------
+# 13. Main orchestration
 # --------------------------------------------------
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -811,6 +888,11 @@ def main():
     scale_pd = run_scalability_experiment(CSV_PATH)
     scale_pd.to_csv(OUTPUT_DIR / "resource_scalability_benchmark.csv", index=False)
     print(f"- {OUTPUT_DIR / 'resource_scalability_benchmark.csv'}")
+
+    # run cross-system comparison
+    system_results_pd = run_models_across_systems(CSV_PATH)
+    system_results_pd.to_csv(OUTPUT_DIR / "system_model_comparison.csv", index=False)
+    print(f"- {OUTPUT_DIR / 'system_model_comparison.csv'}")
 
 
 if __name__ == "__main__":
