@@ -20,9 +20,9 @@ from pyspark.ml.feature import (
     StringIndexer,
     VectorAssembler,
 )
+from pyspark.ml.tuning import CrossValidator, ParamGridBuilder
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
-
 
 # --------------------------------------------------
 # 1. Project constants
@@ -159,8 +159,14 @@ def benchmark_partition_and_shuffle(df, spark):
         f"runtime={best_row['runtime_seconds']}s"
     )
 
-    spark.conf.set("spark.sql.shuffle.partitions", str(int(best_row["shuffle_partitions"])))
-    return int(best_row["repartition"]), int(best_row["shuffle_partitions"]), benchmark_pd
+    spark.conf.set(
+        "spark.sql.shuffle.partitions", str(int(best_row["shuffle_partitions"]))
+    )
+    return (
+        int(best_row["repartition"]),
+        int(best_row["shuffle_partitions"]),
+        benchmark_pd,
+    )
 
 
 # --------------------------------------------------
@@ -244,12 +250,7 @@ def build_preprocessing_stages():
 # 8. Class imbalance utilities
 # --------------------------------------------------
 def find_minority_label(df):
-    counts = (
-        df.groupBy(LABEL_COL)
-        .count()
-        .orderBy(F.col("count").asc())
-        .collect()
-    )
+    counts = df.groupBy(LABEL_COL).count().orderBy(F.col("count").asc()).collect()
     minority_label = counts[0][LABEL_COL]
     majority_label = counts[-1][LABEL_COL]
     minority_count = counts[0]["count"]
@@ -268,7 +269,9 @@ def make_weighted_train_df(train_df, minority_label, minority_count, majority_co
 
     weighted_df = train_df.withColumn(
         "class_weight",
-        F.when(F.col(LABEL_COL) == F.lit(minority_label), F.lit(float(imbalance_ratio))).otherwise(F.lit(1.0)),
+        F.when(
+            F.col(LABEL_COL) == F.lit(minority_label), F.lit(float(imbalance_ratio))
+        ).otherwise(F.lit(1.0)),
     )
 
     print(f"Applied class weighting ratio: {imbalance_ratio:.3f}")
@@ -280,7 +283,9 @@ def make_resampled_train_df(train_df, minority_label, minority_count, majority_c
     majority_df = train_df.filter(F.col(LABEL_COL) != F.lit(minority_label))
 
     downsample_fraction = min(1.0, minority_count / max(1, majority_count))
-    majority_downsampled = majority_df.sample(withReplacement=False, fraction=downsample_fraction, seed=42)
+    majority_downsampled = majority_df.sample(
+        withReplacement=False, fraction=downsample_fraction, seed=42
+    )
 
     resampled = minority_df.unionByName(majority_downsampled)
 
@@ -293,7 +298,7 @@ def make_resampled_train_df(train_df, minority_label, minority_count, majority_c
 
 
 # --------------------------------------------------
-# 9. Model definitions + evaluation
+# 9a. Model definitions + evaluation
 # --------------------------------------------------
 def get_models(weight_col=None):
     lr_kwargs = {
@@ -370,9 +375,13 @@ def evaluate_models(train_df, test_df, scenario_name, show_plan=False, weight_co
         weighted_precision = multi_eval.setMetricName("weightedPrecision").evaluate(
             predictions
         )
-        weighted_recall = multi_eval.setMetricName("weightedRecall").evaluate(predictions)
+        weighted_recall = multi_eval.setMetricName("weightedRecall").evaluate(
+            predictions
+        )
 
-        predictions.select(LABEL_COL, "prediction", "probability").show(6, truncate=False)
+        predictions.select(LABEL_COL, "prediction", "probability").show(
+            6, truncate=False
+        )
 
         results.append(
             {
@@ -391,6 +400,113 @@ def evaluate_models(train_df, test_df, scenario_name, show_plan=False, weight_co
 
 
 # --------------------------------------------------
+# 9b. Cross-validation & hyperparameter tuning
+# --------------------------------------------------
+def cross_validate_best_model(train_df, test_df, weight_col=None):
+    """Run 3-fold CV with a ParamGrid over Random Forest hyperparameters."""
+    print("\n" + "=" * 80)
+    print("CROSS-VALIDATION & HYPERPARAMETER TUNING (Random Forest)")
+    print("=" * 80)
+
+    indexers, encoders, imputer, assembler, scaler = build_preprocessing_stages()
+
+    rf_kwargs = {
+        "featuresCol": "features",
+        "labelCol": LABEL_COL,
+        "seed": 42,
+    }
+    if weight_col:
+        rf_kwargs["weightCol"] = weight_col
+
+    rf = RandomForestClassifier(**rf_kwargs)
+
+    pipeline = Pipeline(stages=indexers + encoders + [imputer, assembler, scaler, rf])
+
+    param_grid = (
+        ParamGridBuilder()
+        .addGrid(rf.numTrees, [40, 80])
+        .addGrid(rf.maxDepth, [5, 8, 10])
+        .build()
+    )
+
+    evaluator = BinaryClassificationEvaluator(
+        labelCol=LABEL_COL,
+        rawPredictionCol="rawPrediction",
+        metricName="areaUnderROC",
+    )
+
+    cv = CrossValidator(
+        estimator=pipeline,
+        estimatorParamMaps=param_grid,
+        evaluator=evaluator,
+        numFolds=3,
+        parallelism=1,
+        seed=42,
+    )
+
+    print(
+        f"Param grid size: {len(param_grid)} combinations x 3 folds = {len(param_grid) * 3} fits"
+    )
+
+    t0 = time.time()
+    cv_model = cv.fit(train_df)
+    cv_time = time.time() - t0
+
+    print(f"Cross-validation completed in {cv_time:.2f}s")
+
+    avg_metrics = cv_model.avgMetrics
+    cv_rows = []
+    for params, avg_auc in zip(param_grid, avg_metrics):
+        row = {
+            "numTrees": params[rf.numTrees],
+            "maxDepth": params[rf.maxDepth],
+            "avg_cv_AUC": round(avg_auc, 4),
+        }
+        cv_rows.append(row)
+
+    cv_results_pd = pd.DataFrame(cv_rows).sort_values("avg_cv_AUC", ascending=False)
+    print("\nCV Results (sorted by AUC):")
+    print(cv_results_pd.to_string(index=False))
+
+    best_predictions = cv_model.transform(test_df)
+
+    multi_eval = MulticlassClassificationEvaluator(
+        labelCol=LABEL_COL, predictionCol="prediction"
+    )
+
+    test_auc = evaluator.evaluate(best_predictions)
+    test_accuracy = multi_eval.setMetricName("accuracy").evaluate(best_predictions)
+    test_f1 = multi_eval.setMetricName("f1").evaluate(best_predictions)
+
+    best_params = cv_results_pd.iloc[0]
+    print(
+        f"\nBest hyperparameters: numTrees={int(best_params['numTrees'])}, maxDepth={int(best_params['maxDepth'])}"
+    )
+    print(f"Best CV AUC:   {best_params['avg_cv_AUC']}")
+    print(f"Test AUC:      {test_auc:.4f}")
+    print(f"Test Accuracy: {test_accuracy:.4f}")
+    print(f"Test F1:       {test_f1:.4f}")
+    print(f"CV Time:       {cv_time:.2f}s")
+
+    cv_results_pd["test_AUC"] = ""
+    cv_results_pd["test_Accuracy"] = ""
+    cv_results_pd["test_F1"] = ""
+    cv_results_pd["cv_time_seconds"] = ""
+    cv_results_pd.iloc[0, cv_results_pd.columns.get_loc("test_AUC")] = round(
+        test_auc, 4
+    )
+    cv_results_pd.iloc[0, cv_results_pd.columns.get_loc("test_Accuracy")] = round(
+        test_accuracy, 4
+    )
+    cv_results_pd.iloc[0, cv_results_pd.columns.get_loc("test_F1")] = round(test_f1, 4)
+    cv_results_pd.iloc[0, cv_results_pd.columns.get_loc("cv_time_seconds")] = round(
+        cv_time, 2
+    )
+
+    return cv_results_pd
+
+
+# --------------------------------------------------
 # 10. Fault tolerance demonstration
 # --------------------------------------------------
 def demonstrate_fault_tolerance(spark, df):
@@ -403,9 +519,15 @@ def demonstrate_fault_tolerance(spark, df):
 
     lineage_df = (
         df.filter(F.col("loan_amount") > 1000)
-        .withColumn("ltv_income_ratio", F.col("LTV") / F.when(F.col("income") == 0, 1).otherwise(F.col("income")))
+        .withColumn(
+            "ltv_income_ratio",
+            F.col("LTV") / F.when(F.col("income") == 0, 1).otherwise(F.col("income")),
+        )
         .groupBy("Region")
-        .agg(F.avg("ltv_income_ratio").alias("avg_ltv_income_ratio"), F.count("*").alias("n"))
+        .agg(
+            F.avg("ltv_income_ratio").alias("avg_ltv_income_ratio"),
+            F.count("*").alias("n"),
+        )
     )
 
     cached_df = lineage_df.persist(StorageLevel.MEMORY_ONLY)
@@ -428,7 +550,9 @@ def demonstrate_fault_tolerance(spark, df):
     cp_count = checkpointed.count()
 
     print(f"First action (compute + cache): rows={first_count}, time={first_time:.3f}s")
-    print(f"Second action (cache hit):     rows={second_count}, time={second_time:.3f}s")
+    print(
+        f"Second action (cache hit):     rows={second_count}, time={second_time:.3f}s"
+    )
     print(f"After unpersist (recompute):   rows={third_count}, time={third_time:.3f}s")
     print(f"Checkpointed rows: {cp_count}")
     print("Recompute after cache loss demonstrates lineage-based recovery.")
@@ -443,7 +567,9 @@ def demonstrate_fault_tolerance(spark, df):
                 "third_count": third_count,
                 "third_time_seconds": round(third_time, 3),
                 "checkpoint_count": cp_count,
-                "recompute_slower_than_cache_hit": round(max(0.0, third_time - second_time), 3),
+                "recompute_slower_than_cache_hit": round(
+                    max(0.0, third_time - second_time), 3
+                ),
             }
         ]
     )
@@ -560,7 +686,9 @@ def main():
         df = clean_data(df)
 
         # Tune partition/shuffle settings before model training.
-        best_repart, best_shuffle, partition_benchmark_pd = benchmark_partition_and_shuffle(df, spark)
+        best_repart, best_shuffle, partition_benchmark_pd = (
+            benchmark_partition_and_shuffle(df, spark)
+        )
 
         # Split and persist core DataFrames for repeated training/evaluation actions.
         train_df, test_df = df.randomSplit([0.8, 0.2], seed=42)
@@ -580,8 +708,8 @@ def main():
         # Compare cache storage strategies on the training split.
         cache_benchmark_pd = benchmark_cache_levels(train_df)
 
-        minority_label, majority_label, minority_count, majority_count = find_minority_label(
-            train_df
+        minority_label, majority_label, minority_count, majority_count = (
+            find_minority_label(train_df)
         )
 
         weighted_train_df = make_weighted_train_df(
@@ -647,20 +775,31 @@ def main():
         print(f"Weighted Recall: {best_row['Weighted Recall']}")
         print(f"Train+Eval Time (s): {best_row['Train+Eval Time (s)']}")
 
+        # Cross-validation & hyperparameter tuning on the baseline training set.
+        cv_results_pd = cross_validate_best_model(train_df, test_df, weight_col=None)
+
         # Demonstrate Spark lineage recomputation and checkpoint behavior.
         fault_tolerance_pd = demonstrate_fault_tolerance(spark, df)
 
         # Export all benchmark/model outputs for reporting.
-        partition_benchmark_pd.to_csv(OUTPUT_DIR / "partition_shuffle_benchmark.csv", index=False)
-        cache_benchmark_pd.to_csv(OUTPUT_DIR / "cache_storage_benchmark.csv", index=False)
+        partition_benchmark_pd.to_csv(
+            OUTPUT_DIR / "partition_shuffle_benchmark.csv", index=False
+        )
+        cache_benchmark_pd.to_csv(
+            OUTPUT_DIR / "cache_storage_benchmark.csv", index=False
+        )
         results_pd.to_csv(OUTPUT_DIR / "model_system_comparison.csv", index=False)
-        fault_tolerance_pd.to_csv(OUTPUT_DIR / "fault_tolerance_benchmark.csv", index=False)
+        fault_tolerance_pd.to_csv(
+            OUTPUT_DIR / "fault_tolerance_benchmark.csv", index=False
+        )
+        cv_results_pd.to_csv(OUTPUT_DIR / "cross_validation_results.csv", index=False)
 
         print("\nSaved CSV outputs:")
         print(f"- {OUTPUT_DIR / 'partition_shuffle_benchmark.csv'}")
         print(f"- {OUTPUT_DIR / 'cache_storage_benchmark.csv'}")
         print(f"- {OUTPUT_DIR / 'model_system_comparison.csv'}")
         print(f"- {OUTPUT_DIR / 'fault_tolerance_benchmark.csv'}")
+        print(f"- {OUTPUT_DIR / 'cross_validation_results.csv'}")
 
         train_df.unpersist(blocking=True)
         test_df.unpersist(blocking=True)
