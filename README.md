@@ -135,6 +135,21 @@ Output CSV:
 - `outputs/model_system_comparison.csv`
 
 # --------------------------------------------------
+# 9b. Cross-validation & hyperparameter tuning
+# --------------------------------------------------
+
+Runs 3-fold cross-validation on Random Forest with a parameter grid:
+
+- `numTrees`: [40, 80]
+- `maxDepth`: [5, 8, 10]
+
+That is 6 combinations x 3 folds = 18 model fits. Best configuration is then evaluated on the held-out test set.
+
+Output CSV:
+
+- `outputs/cross_validation_results.csv`
+
+# --------------------------------------------------
 # 10. Fault tolerance demonstration
 # --------------------------------------------------
 
@@ -208,6 +223,9 @@ Bar charts comparing model AUC scores and training times across different config
 ## model_heatmap.png
 Heatmap of AUC, Accuracy, F1, Precision, Recallacross all model/scenario combos
 
+## cross_validation.png
+Heatmap and ranked bar chart of Random Forest cross-validation AUC across the 6 hyperparameter combinations (numTrees x maxDepth)
+
 # --------------------------------------------------
 # 14. Slideshow Outline
 # --------------------------------------------------
@@ -256,12 +274,17 @@ Heatmap of AUC, Accuracy, F1, Precision, Recallacross all model/scenario combos
 - Three scenarios: Baseline, Class Weighting, Downsampling
 - Figure: `model_comparison.png` or `model_heatmap.png`
 
-## Slide 10: Results Summary
+## Slide 10: Cross-Validation & Hyperparameter Tuning
+- 3-fold CV on Random Forest with 6 hyperparameter combinations
+- numTrees x maxDepth grid search
+- Figure: `cross_validation.png`
+
+## Slide 11: Results Summary
 - Found best model was Random Forest w (AUC = 0.98)
 - Found best Spark config was 10 partitions, 40 shuffle partitions
 - Show that tuning and model go together
 
-## Slide 11: Conclusions
+## Slide 12: Conclusions
 - Demonstrated distributed ML pipeline with Spark
 - Showed impact of partitioning, caching, and resource allocation
 - Validated fault tolerance via RDD lineage

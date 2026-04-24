@@ -267,6 +267,58 @@ def plot_class_imbalance():
     print("Generated: class_imbalance.png")
 
 
+def plot_cross_validation():
+    df = pd.read_csv(OUTPUT_DIR/"cross_validation_results.csv")
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    # heatmap of AUC by hyperparameters
+    pivot = df.pivot(index="maxDepth", columns="numTrees", values="avg_cv_AUC")
+
+    im = axes[0].imshow(pivot.values, cmap="viridis", aspect="auto")
+    axes[0].set_xticks(range(len(pivot.columns)))
+    axes[0].set_xticklabels(pivot.columns)
+    axes[0].set_yticks(range(len(pivot.index)))
+    axes[0].set_yticklabels(pivot.index)
+    axes[0].set_xlabel("numTrees")
+    axes[0].set_ylabel("maxDepth")
+    axes[0].set_title("Cross-Validated AUC by Hyperparameters")
+
+    for i in range(len(pivot.index)):
+        for j in range(len(pivot.columns)):
+            val = pivot.values[i, j]
+            color = "white" if val < 0.97 else "black"
+            axes[0].text(j, i, f"{val:.4f}", ha="center", va="center", color=color, fontsize=11, fontweight="bold")
+
+    plt.colorbar(im, ax=axes[0], label="Avg CV AUC")
+
+    # bar chart sorted by AUC
+    df_sorted = df.sort_values("avg_cv_AUC", ascending=True).copy()
+    df_sorted["config"] = df_sorted.apply(
+        lambda r: f"trees={int(r['numTrees'])}, depth={int(r['maxDepth'])}", axis=1
+    )
+
+    colors = plt.get_cmap("viridis")(np.linspace(0.2, 0.9, len(df_sorted)))
+    bars = axes[1].barh(df_sorted["config"], df_sorted["avg_cv_AUC"], color=colors, edgecolor="black")
+    axes[1].set_xlabel("Avg CV AUC")
+    axes[1].set_ylabel("Hyperparameter Combination")
+    axes[1].set_title("Random Forest Hyperparameter Ranking (3-Fold CV)")
+    axes[1].set_xlim(df_sorted["avg_cv_AUC"].min() - 0.002, df_sorted["avg_cv_AUC"].max() + 0.002)
+
+    # highlight best
+    bars[-1].set_edgecolor("green")
+    bars[-1].set_linewidth(3)
+
+    for bar, val in zip(bars, df_sorted["avg_cv_AUC"]):
+        axes[1].annotate(f"{val:.4f}", xy=(val, bar.get_y() + bar.get_height()/2),
+                         xytext=(3, 0), textcoords="offset points", va="center", fontsize=9)
+
+    plt.tight_layout()
+    plt.savefig(FIGURES_DIR/"cross_validation.png", bbox_inches="tight")
+    plt.close()
+    print("Generated: cross_validation.png")
+
+
 def main():
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
     setup_style()
@@ -276,6 +328,7 @@ def main():
     plot_fault_tolerance()
     plot_scalability()
     plot_class_imbalance()
+    plot_cross_validation()
 
 if __name__ == "__main__":
     main()

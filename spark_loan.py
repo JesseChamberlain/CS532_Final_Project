@@ -488,10 +488,10 @@ def cross_validate_best_model(train_df, test_df, weight_col=None):
     print(f"Test F1:       {test_f1:.4f}")
     print(f"CV Time:       {cv_time:.2f}s")
 
-    cv_results_pd["test_AUC"] = ""
-    cv_results_pd["test_Accuracy"] = ""
-    cv_results_pd["test_F1"] = ""
-    cv_results_pd["cv_time_seconds"] = ""
+    cv_results_pd["test_AUC"] = float("nan")
+    cv_results_pd["test_Accuracy"] = float("nan")
+    cv_results_pd["test_F1"] = float("nan")
+    cv_results_pd["cv_time_seconds"] = float("nan")
     cv_results_pd.iloc[0, cv_results_pd.columns.get_loc("test_AUC")] = round(
         test_auc, 4
     )
